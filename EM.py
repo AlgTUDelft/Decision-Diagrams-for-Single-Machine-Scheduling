@@ -3,6 +3,7 @@ import math
 import time
 #import numpy
 import gc
+import heapq
 
 class Solver:
     def __init__(self, dataset_file):
@@ -14,9 +15,13 @@ class Solver:
         self.last_window = self.time_windows[0]
         self.last_partial_job_ids = []
         self.last_prev_job_state = []
-        
+        self.priority_queue = []
+        self.entry_finder = {}               # mapping of tasks to entries
+        self.REMOVED = '<removed-task>'      # placeholder for a removed task
+        self.counter = itertools.count()     # unique sequence count
+
         # Create job state store to avoid duplicates in memory
-        self.job_states = {'0,1': JobState([self.jobs[0].id],1)}
+        self.job_states = {'0': JobState([self.jobs[0].id])}
         
         self.prep_windows()
         
@@ -29,6 +34,10 @@ class Solver:
             for window in self.time_windows:
                 print("{0}".format("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[window.width]), end="")
             print()
+
+        for key in self.source.path_points:
+            for time1, path_point in self.source.path_points[key].items():
+                self.add_point(path_point)
         for window in self.time_windows:
             self.y = 0
             self.n = 0
@@ -46,65 +55,110 @@ class Solver:
                 if len(rem_jobs) > 0:
                     gc.collect()
             
-            for job_state_size in range(0, window.width + 1):
-                for job in window.jobs:
-                    job_states = job.get_job_states(job_state_size, self.job_states)
-                    for job_state in job_states:
-                        path_points = job.get_path_points(job_state, window)
-                        if len(path_points) > 0:
-                            max_value = max([other.value for other_time, other in path_points])
-                            max_path_time, max_path = [(point_time, point) for point_time, point in path_points if point.value == max_value][0]
-                        for path_point_time, path_point in path_points:
-                            
-                            if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
-                                timeout = True
-                                break
-                            if not self.is_dominated(job, job_state, path_point_time, path_point, window):
-                                for successor in job.successors[window.start_time]:
-                                    if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
-                                            timeout = True
-                                            break
-                                    if successor.id not in job_state.job_ids:
-                                        self.try_path(job, successor, path_point_time, path_point, job_state, window)
+#            print("window: " + str(window.start_time) + "-" + str(window.next_start_time))
 
-                                # Only consider last path point for far off vertices
-                                if path_point.value == max_value:
-                                    for successor in job.far_offs[window.start_time]:
-                                        if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
-                                            timeout = True
-                                            break
-                                        if successor.id not in job_state.job_ids:
-                                            self.try_path(job, successor, max_path_time, max_path, job_state, window)
-                            else:
-                                del(job.path_points[job_state.as_key()][path_point_time])
-                                del(path_point)
-                            if timeout:
-                                break
-                        if timeout:
-                            break
-                    if timeout:
-                        break
-                if timeout:
+            while not self.is_empty():
+                if time.time()-t>1800:# or psutil.virtual_memory().percent > 90:
+                    timeout = True
                     break
+            
+                path_point = self.peek_point()
+                job = path_point.job
+                job_state = path_point.job_state
+                path_point_time = path_point.path_point_time
+
+                if path_point.path_point_time-path_point.job.processing_time >= window.next_start_time:
+                    break
+
+                if not self.is_dominated(job, job_state, path_point_time, path_point, window):
+                    for successor in job.successors[window.start_time]:
+                        if time.time()-t>1800:# or psutil.virtual_memory().percent > 90:
+                             timeout = True
+                             break                
+                        if successor.id not in job_state.job_ids:
+                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window)
+                             if get:
+                                 self.add_point(new_point)
+
+                     #far off
+                    for successor in job.far_offs[window.start_time]:
+                        if time.time()-t>1800:# or psutil.virtual_memory().percent > 90:
+                             timeout = True
+                             break
+                        if successor.id not in job_state.job_ids:
+                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window)
+                             if get:
+                                self.add_point(new_point)
+
+                else:
+                    try:
+                        del(job.path_points[job_state.as_key()][path_point_time])
+                        del(path_point)
+                    except:
+                        print("cannot delete path points: job_state = " + str(job_state.job_ids) + " path_point_time = " + str(path_point_time))
+                
+                self.pop_point()
+
             if timeout:
                 break
             
-            if self.verbose:
-                if self.y >= self.n:
-                    print("y", end="")
-                else:
-                    print(min(9,int(self.n / (self.y + 1))), end="")
-        #memoryout = False
-        #if psutil.virtual_memory().percent > 90:
-        #    memoryout=True
+            #if self.verbose:
+            #    if self.y >= self.n:
+            #        print("y", end="")
+            #    else:
+            #        print(min(9,int(self.n / (self.y + 1))), end="")
+
         return self.sink.get_best_path()
     
+    def add_point(self,point):
+        if point in self.entry_finder:
+            raise Error('point already exists')
+            #self.remove_point(point)
+        count = next(self.counter)
+        entry = [point.point_start_time, count, point]
+        self.entry_finder[point] = entry
+        heapq.heappush(self.priority_queue, entry)
+
+    def remove_point(self,point):
+        try:
+            entry = self.entry_finder[point]
+            entry[-1] = self.REMOVED
+            del self.entry_finder[point]
+        except:
+            print("remove unexisting point")
+
+    def peek_point(self):
+            while self.priority_queue:
+                priority, count, point = self.priority_queue[0]
+                if point is not self.REMOVED:
+                    return point
+                else:
+                    heapq.heappop(self.priority_queue)
+            raise KeyError('peek from an empty priority queue')
+
+    def pop_point(self):
+        while self.priority_queue:
+            priority, count, point = heapq.heappop(self.priority_queue)
+            if point is not self.REMOVED:
+                del self.entry_finder[point]
+                return point
+        raise KeyError('pop from an empty priority queue')
+
+    def is_empty(self):
+        while self.priority_queue:
+            priority, count, point = self.priority_queue[0]
+            if point is not self.REMOVED:
+                return 0
+            else:
+                heapq.heappop(self.priority_queue)
+        return 1
+
     def is_dominated(self, job, job_state, point_time, point, window):
         start_time = point_time
         value = point.value
         if len(job_state.job_ids)>0:
             for subset in job_state.subsets(len(job_state.job_ids)-1):
-                subset_key = JobState(subset,len(subset)).as_key()
+                subset_key = JobState(subset).as_key()
                 if subset_key in job.path_points:
                     for other_point_time, other_point in job.path_points[subset_key].items():
                         if other_point.value >= value and other_point_time <= start_time:# and subset_key!= job_state.key:
@@ -115,7 +169,7 @@ class Solver:
             visited = point.must_visits()
             for alt_job in [job for job in window.jobs if job.id not in job_state.job_ids and job not in visited]:
                 ids = sorted([j for j in job_state.job_ids if j != swapped_job.id] + [alt_job.id])
-                alt_state = JobState(ids,len(ids))
+                alt_state = JobState(ids)
                 alt_state_key = alt_state.as_key()
                 if alt_state_key in job.path_points:
                     for other_point_time, other_point in job.path_points[alt_state_key].items():
@@ -124,7 +178,7 @@ class Solver:
                             break
             for alt_job in [job for job in window.jobs if job.id not in job_state.job_ids and job not in visited and job not in point.must_visit]:
                 ids=sorted(job_state.job_ids + [alt_job.id])
-                alt_state = JobState(ids,len(ids))
+                alt_state = JobState(ids)
                 alt_state_key = alt_state.as_key()
                 if alt_state_key in job.path_points:
                     for other_point_time, other_point in job.path_points[alt_state_key].items():
@@ -153,13 +207,15 @@ class Solver:
     """
     def try_path(self, job, successor, path_point_time, path_point, job_state, original_window): 
 
+        temp_point = PathPoint(0, successor, path_point, set(),path_point.VisitedStates,0,path_point.job_state)
+
         arrival_time = path_point_time# + job.processing_time
         start_time = max(arrival_time, successor.release_time) + job.setup_time(successor)
         completion_time = start_time + successor.processing_time
 
         # check feasibility of new path point
         if completion_time > successor.deadline:
-            return 
+            return temp_point,False
         
         # calculate value
         full_value = path_point.value + successor.value
@@ -174,38 +230,27 @@ class Solver:
             partial_job_ids.append(successor.id)
 
         job_ids = sorted(partial_job_ids)
-
-        size = 0
-
-        if start_time<original_window.next_start_time and len(job_ids)<=job_state.size:
-            size = job_state.size+1
-        else:
-            size = len(job_ids)
  
-        new_job_state = JobState(job_ids,size)
+        new_job_state = JobState(job_ids)
         new_key = new_job_state.as_key()
         #new_job_state.job_com_ids = partial_job_com_ids
         
         # Create new state if completely new
         if new_key not in self.job_states:
             self.job_states[new_key] = new_job_state
-        #else:
-        #    self.job_states[new_key].job_com_ids= list(set(new_job_state.job_com_ids).union(set(self.job_states[new_key].job_com_ids)))
         
         new_job_state = self.job_states[new_key]
 
         # If the state is new even just in this job, no need to check for domination
         if new_key not in successor.path_points:
             successor.path_points[new_key] = {}
-            successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids)
-            return
+            successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state)
+            return successor.path_points[new_key][completion_time],True
 
         # check for dominating path_point for the same state (irrespective of windows!)
         for point_time, point in successor.path_points[new_key].items():
-            #if point_time == completion_time:
-            #    self.job_states[new_key].job_com_ids= partial_job_com_ids|self.job_states[new_key].job_com_ids
             if point_time <= completion_time and point.value >= value:
-                return
+                return temp_point,False
             
 
         # Delete path points dominated by this new one
@@ -215,15 +260,14 @@ class Solver:
                 toss.append(point_time)
         for point_time in toss:
             point = successor.path_points[new_key][point_time]
+            self.remove_point(point)
             del(successor.path_points[new_key][point_time])
             del(point)
         #for point_time, point in successor.path_points[new_key].items():
 
-        #if value<successor.path_points[new_key][completion_time].value:
-        #    aaaa=1;
             
-        successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids)
-        return
+        successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state)
+        return successor.path_points[new_key][completion_time],True
         
     """
     Finds the time window corresponding to a given time.
@@ -231,25 +275,8 @@ class Solver:
     MUTATING: self.last_window
     """
     def get_partial_job_state(self, time, job, job_state, original_window, path_point):
-        # track last window because it is not all that unlikely that this remains the same for many path points
-        #if time < self.last_window.start_time or time >= self.last_window.next_start_time or job_state.job_ids != self.last_prev_job_state:
-        #    if time >= self.last_window.next_start_time:
-        #        for i in range(self.last_window.id + 1, len(self.time_windows)):
-        #            if time < self.time_windows[i].next_start_time:
-        #                self.last_window = self.time_windows[i]
-        #                break
-        #    else:
-        #        for i in range(original_window.id, self.last_window.id):
-        #            if time < self.time_windows[i].next_start_time:
-        #                self.last_window = self.time_windows[i]
-        #                break
-        #    self.last_prev_job_state = job_state.job_ids
-        #    self.last_partial_job_ids = [i for i in job_state.job_ids if i in self.last_window.job_ids]
         last_partial_job_com_ids=set()
         self.last_partial_job_ids=[]
-        #self.jobs
-        #for Job in original_window.jobs:
-        #    if Job.id in job_state.job_ids and Job.latest_start_time>=time: path_point.VisitedStates: 
         for id in path_point.VisitedStates: 
             if self.jobs[id].latest_start_time>=time:
                 last_partial_job_com_ids.add(id)
@@ -321,11 +348,7 @@ class Job:
         return str(self.id)
     
     def get_job_states(self, size, job_states): #functional
-        #for key in self.path_points:
-        #    if key in job_states:
-        #        if job_states[key].size==size:
-        #            aaaa=1
-        return [job_states[key] for key in self.path_points if key in job_states and job_states[key].size == size]
+        return [job_states[key] for key in self.path_points if key in job_states and len(job_states[key].job_ids) == size]
     
     def setup_time(self, successor): #functional
         return self.setup_times[successor.id]
@@ -355,14 +378,11 @@ class Window:
         return "[{0}\t{1})".format(self.start_time, self.next_start_time)
 
 class JobState:
-    __slots__ = ('job_ids', 'key', 'size')
+    __slots__ = ('job_ids', 'key')
     
-    def __init__(self, job_ids, size):
+    def __init__(self, job_ids):
         self.job_ids = job_ids
         self.key = ",".join([str(job_id) for job_id in self.job_ids])
-        self.key+=","+str(size)
-        self.size = size
-        #self.job_com_ids=set(); ,'job_com_ids'
     
     def __len__(self):
         return self.size
@@ -377,14 +397,17 @@ class JobState:
         return set(itertools.combinations(self.job_ids, i))
 
 class PathPoint:
-    __slots__ = ('value', 'job', 'previous', 'must_visit', 'VisitedStates')
+    __slots__ = ('value', 'job', 'previous', 'must_visit', 'VisitedStates', 'path_point_time','job_state','point_start_time')
     
-    def __init__(self, value, job, previous, must_visit, VisitedStates):
+    def __init__(self, value, job, previous, must_visit, VisitedStates, path_point_time, job_state):
         self.value = value
         self.job = job
         self.previous = previous
         self.must_visit = must_visit
         self.VisitedStates = VisitedStates
+        self.job_state = job_state
+        self.path_point_time = path_point_time
+        self.point_start_time= self.path_point_time-job.processing_time
         
     def __repr__(self):
         return "(" + str(self.value) + ")"
@@ -437,9 +460,9 @@ def extract_jobs(dataset): #functional
     jobs[-1].deadline += 1 # algorithm never completes on deadline
         
     # Start path at source
-    source_job_state = JobState([jobs[0].id],1)
+    source_job_state = JobState([jobs[0].id])
     jobs[0].path_points[source_job_state.as_key()] = {}
-    source_path_point = PathPoint(jobs[0].value, jobs[0], None, set(), set())
+    source_path_point = PathPoint(jobs[0].value, jobs[0], None, set(), set(),0,source_job_state)
     jobs[0].path_points[source_job_state.as_key()][jobs[0].release_time] = source_path_point
     
     return (jobs, jobs[0], jobs[-1])
@@ -465,23 +488,92 @@ def get_time_windows(jobs): #functional
     return time_windows
 
 
-for n in [50,100]:
-    for tau in [9]:
-        for r in [1,3,5,7,9]:
-            for ins in [1,2,3,4,5,6,7,8,9,10]:#
-                solver = Solver(dataset(n, tau, r, ins))
-                f = open("result.txt", 'a+')
-                t = -time.time()
-                path = solver.solve_exact()
-                t += time.time()
+#for v in reversed([v/100 for v in range(0, 102, 2)]):
+#        for ins in range(0, 5):
+#             filename = "Dataset_OAS/Dataset_bounded_width/CovarianceChange_30orders_c{0}_{1}.txt".format(v, ins)
 
- #             print()
-                try:
-                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t), file=f)
-                except:
-                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f) 
- #             print(path.get_path())
-                f.close();
-                del(solver)
-                del(path)
-                gc.collect()
+#             solver = Solver(filename)
+
+#             f = open("cov_EM.txt", 'a+')
+
+#             t = -time.time()
+#             path = solver.solve_exact()
+#             t += time.time()
+
+#             try:
+
+
+#                 string1=" " 
+#                 print("CovarianceChange_{0}_{1}\t{2}\t{3}\t{4}".format((1-v),ins,path.value, t,string1), file=f)
+#                 print("CovarianceChange_{0}_{1}\t{2}\t{3}".format((1-v),ins,path.value,t))
+#             except:
+#                 print("CovarianceChange_{0}_{1}\tNo results.".format((1-v),ins))
+
+#             del(solver)
+#             del(path)
+#             gc.collect()
+
+
+n = 100
+
+
+for R in [1]:
+    for w in [3,5,7,9,11,13,15,17,19]:
+         for ins in range(0, 5):
+             f = open("width_EM.txt", 'a+')
+             filename = "Instances_DiffWidth/Dataset_{0}orders_w{1}R{2}_{3}.txt".format(n, w, R, ins)
+
+             solver = Solver(filename)
+
+             
+
+             t = -time.time()
+             path = solver.solve_exact()
+             t += time.time()
+
+             try:
+                 print("{0},{1},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t))
+                 print("{0},{2},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t), file=f)
+             except:
+                 print("{0},{1},{2},{3}\tNo result.".format(n, w, R, ins), file=f)  
+
+             del(solver)
+             del(path)
+             gc.collect()
+
+#for n in [50,100]:
+#    for tau in [9]:
+#        for r in [1,3,5,7,9]:
+#            for ins in [1,2,3,4,5,6,7,8,9,10]:
+#                if n==100 and r>5:
+#                    break
+#                solver = Solver(dataset(n, tau, r, ins))
+#                f = open("oas_EM.txt", 'a+')
+#                t = -time.time()
+#                path = solver.solve_exact()
+#                t += time.time()
+
+#                list = []
+#                list.append(path);
+#                point = path.previous
+#                while point!=None:
+#                    list.append(point)
+#                    point = point.previous
+
+#                i = len(list)-1;
+#                string1 = "sol:"
+#                while i>=0:
+#                    string1 += str(list[i].job.id) +","
+#                    i-=1
+
+#                try:
+#                    print("{0},{1},{2},{3}\t{4}\t{5}\t{6}".format(n, tau, r, ins, path.value, t,string1), file=f)
+#                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t))
+#                except:
+#                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f) 
+
+#                f.close();
+#                del(solver)
+#                del(path)
+#                del(list);
+#                gc.collect()

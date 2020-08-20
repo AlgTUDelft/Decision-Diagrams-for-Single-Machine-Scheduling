@@ -6,9 +6,9 @@ import gc
 import heapq
 
 class Solver:
-    def __init__(self, dataset_file, limit=3600):
+    def __init__(self, dataset_file, w=100, heuristic=False, heuristic_function=None, limit=3600):
         # Load problem
-        self.jobs, self.source, self.sink = extract_jobs(dataset_file)
+        self.jobs, self.source, self.sink = extract_jobs(dataset_file,heuristic_function)
         
         # Create time windows
         self.time_windows = get_time_windows(sorted(self.jobs))
@@ -23,20 +23,21 @@ class Solver:
         # Create job state store to avoid duplicates in memory
         self.job_states = {'0': JobState([self.jobs[0].id])}
         
+        self.heuristic = heuristic
+
+        self.w = w
+        self.w2 = w
         self.limit=limit
+
+        self.heuristic_function = heuristic_function
+
         self.prep_windows()
         
         self.verbose = False
-
-    def slack(self, epsilon):
-        return epsilon * self.best_value / (len(self.jobs) - 1)
         
-    def solve_fptas(self, epsilon):
-        
-        self.best_value = 0
+    def solve_exact(self):
         t=time.time()
         timeout = False
-
         if self.verbose:
             for window in self.time_windows:
                 print("{0}".format("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[window.width]), end="")
@@ -83,7 +84,7 @@ class Solver:
                              timeout = True
                              break                
                         if successor.id not in job_state.job_ids:
-                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window, self.slack(epsilon))
+                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window)
                              if get:
                                  self.add_point(new_point)
 
@@ -93,7 +94,7 @@ class Solver:
                              timeout = True
                              break
                         if successor.id not in job_state.job_ids:
-                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window, self.slack(epsilon))
+                             new_point,get = self.try_path(job, successor, path_point_time, path_point, job_state, window)
                              if get:
                                 self.add_point(new_point)
 
@@ -102,8 +103,7 @@ class Solver:
                         del(job.path_points[job_state.as_key()][path_point_time])
                         del(path_point)
                     except:
-                        a=1
-                        #print("cannot delete path points: job_state = " + str(job_state.job_ids) + " path_point_time = " + str(path_point_time))
+                        print("cannot delete path points: job_state = " + str(job_state.job_ids) + " path_point_time = " + str(path_point_time))
                 
                 self.pop_point()
 
@@ -213,9 +213,13 @@ class Solver:
     TODO: optimise, most used method
     MUTATING: self.jobs (successor), self.last_window
     """
-    def try_path(self, job, successor, path_point_time, path_point, job_state, original_window, slack): 
+    def try_path(self, job, successor, path_point_time, path_point, job_state, original_window): 
 
-        temp_point = PathPoint(0, successor, path_point, set(),path_point.VisitedStates,0,path_point.job_state)
+        temp_point = PathPoint(0, successor, path_point, set(),path_point.VisitedStates,0,path_point.job_state,0)
+
+        #apply balas neighbourhood
+        if successor.index + self.w < path_point.index: # successor must be scheduled before path_point
+            return temp_point,False
 
         arrival_time = path_point_time# + job.processing_time
         start_time = max(arrival_time, successor.release_time) + job.setup_time(successor)
@@ -242,6 +246,9 @@ class Solver:
         new_job_state = JobState(job_ids)
         new_key = new_job_state.as_key()
         #new_job_state.job_com_ids = partial_job_com_ids
+
+        #Calculate current max index
+        index = max(path_point.index,successor.index)
         
         # Create new state if completely new
         if new_key not in self.job_states:
@@ -249,29 +256,22 @@ class Solver:
         
         new_job_state = self.job_states[new_key]
 
-        # create new path point
-        new_point =  PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state)
-
         # If the state is new even just in this job, no need to check for domination
         if new_key not in successor.path_points:
             successor.path_points[new_key] = {}
-            successor.path_points[new_key][completion_time] = new_point
+            successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state,index)
             return successor.path_points[new_key][completion_time],True
 
         # check for dominating path_point for the same state (irrespective of windows!)
         for point_time, point in successor.path_points[new_key].items():
-            if point_time <= completion_time and point.value + point.max_upper(slack) >= value:
-                point.upper = max(point.upper, value - point.value)
+            if point_time <= completion_time and point.value >= value:
                 return temp_point,False
-        
-        # set new best value
-        self.best_value = max(self.best_value, value)
+            
 
         # Delete path points dominated by this new one
         toss = []
         for point_time, point in successor.path_points[new_key].items():
-            if point.value <= value + new_point.max_upper(slack) and point_time >= completion_time:
-                new_point.upper = max(new_point.upper, point.value - value)
+            if point.value <= value and point_time >= completion_time:
                 toss.append(point_time)
         for point_time in toss:
             point = successor.path_points[new_key][point_time]
@@ -281,7 +281,7 @@ class Solver:
         #for point_time, point in successor.path_points[new_key].items():
 
             
-        successor.path_points[new_key][completion_time] = new_point
+        successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state,index)
         return successor.path_points[new_key][completion_time],True
         
     """
@@ -295,7 +295,7 @@ class Solver:
         for id in path_point.VisitedStates: 
             if self.jobs[id].latest_start_time>=time:
                 last_partial_job_com_ids.add(id)
-                if self.jobs[id].latest_start_time>=time+job.setup_time(self.jobs[id]):
+                if self.jobs[id].latest_start_time>=time+job.setup_time(self.jobs[id]) and abs(self.jobs[id].index -job.index) <= self.w:
                     self.last_partial_job_ids.append(id);
         return last_partial_job_com_ids,self.last_partial_job_ids
     
@@ -320,16 +320,23 @@ class Solver:
                                       # and are not so far in the future that only the highest value path point is significant
                                       and not min(window.next_start_time - 1, job.latest_start_time) + job.processing_time 
                                       <= successor.release_time
+                                      # Apply balas neighborhood 
+                                     and (abs(successor.index -job.index) <= self.w or successor.index==len(self.jobs)-1 or job.index==0)
                                      ], key=lambda s: job.setup_time(s))
                     far_offs = sorted([successor for successor in self.jobs
                                     # jobs that are so far in the future that only the highest value path point is significant
                                     if min(window.next_start_time - 1, job.latest_start_time) + job.processing_time 
                                     <= successor.release_time
+                                    # Apply balas neighborhood 
+                                     and (abs(successor.index -job.index) <= self.w or successor.index==len(self.jobs)-1 or job.index==0)
                                    ], key=lambda s: s.release_time + job.setup_time(s))
                     job.successors[window.start_time] = successors
                     job.far_offs[window.start_time] = far_offs
                     job.windows.append(window)
-            self.sink.successors[window.start_time] = []        
+            self.sink.successors[window.start_time] = []    
+            
+def latest_start_time(x):
+    return x.latest_start_time
     
 class Job:
     def __init__(self, i, r, p, e, dd, dl, w, s):
@@ -400,7 +407,7 @@ class JobState:
         self.key = ",".join([str(job_id) for job_id in self.job_ids])
     
     def __len__(self):
-        return len(self.job_ids)
+        return self.size
     
     def __repr__(self):
         return "(" + self.as_key() + ")"
@@ -412,9 +419,9 @@ class JobState:
         return set(itertools.combinations(self.job_ids, i))
 
 class PathPoint:
-    __slots__ = ('value', 'job', 'previous', 'must_visit', 'VisitedStates', 'path_point_time','job_state','point_start_time', 'upper')
+    __slots__ = ('value', 'job', 'previous', 'must_visit', 'VisitedStates', 'path_point_time','job_state','point_start_time', 'index')
     
-    def __init__(self, value, job, previous, must_visit, VisitedStates, path_point_time, job_state):
+    def __init__(self, value, job, previous, must_visit, VisitedStates, path_point_time, job_state, index):
         self.value = value
         self.job = job
         self.previous = previous
@@ -423,20 +430,8 @@ class PathPoint:
         self.job_state = job_state
         self.path_point_time = path_point_time
         self.point_start_time= self.path_point_time-job.processing_time
-        self.upper = 0
-
-    def max_upper(self, slack_per_job):
-        if self.previous is None:
-            return slack_per_job - self.upper
-        else:
-            return self.previous.max_upper(slack_per_job) + slack_per_job - self.upper
-    
-    def upper_bound(self):
-        if self.previous is None:
-            return self.upper
-        else:
-            return self.previous.upper_bound() + self.upper
-
+        self.index = index # Current max index
+        
     def __repr__(self):
         return "(" + str(self.value) + ")"
     
@@ -463,7 +458,7 @@ def line_to_ints(line): #functional
 def line_to_floats(line): #functional
     return [float(i) for i in line.split(",")]
 
-def extract_jobs(dataset): #functional
+def extract_jobs(dataset,heuristic_function): #functional
     file = open(dataset, "r")
     r = line_to_ints(file.readline())
     p = line_to_ints(file.readline())
@@ -486,11 +481,17 @@ def extract_jobs(dataset): #functional
     jobs[-1].due_date = jobs[-1].deadline
     jobs[-1].latest_start_time = jobs[-1].deadline
     jobs[-1].deadline += 1 # algorithm never completes on deadline
+
+    # Calculate index
+    index_jobs = [];
+    index_jobs = sorted(jobs, key=heuristic_function)
+    for i in range(0,len(index_jobs)):
+        index_jobs[i].index = i
         
     # Start path at source
     source_job_state = JobState([jobs[0].id])
     jobs[0].path_points[source_job_state.as_key()] = {}
-    source_path_point = PathPoint(jobs[0].value, jobs[0], None, set(), set(),0,source_job_state)
+    source_path_point = PathPoint(jobs[0].value, jobs[0], None, set(), set(),0,source_job_state,index=0)
     jobs[0].path_points[source_job_state.as_key()][jobs[0].release_time] = source_path_point
     
     return (jobs, jobs[0], jobs[-1])
@@ -516,55 +517,59 @@ def get_time_windows(jobs): #functional
     return time_windows
 
 
-#for phi in [0.05,0.1]:
-#    for n in [50,100]:
-#        for tau in [9]:
-#            for r in [1,3,5,7,9]:
-#                for ins in [1,2,3,4,5,6,7,8,9,10]:
-#                    if n==100 and r>5:
-#                        break
-#                    solver = Solver(dataset(n, tau, r, ins),limit=3600)
-#                    f = open("oas_FPTAS.txt", 'a+')
-#                    t = -time.time()
-#                    path = solver.solve_fptas(phi)
-#                    t += time.time()
+#heuristic_function = latest_start_time
 
-#                    list = []
-#                    list.append(path);
-#                    point = path.previous
-#                    while point!=None:
-#                        list.append(point)
-#                        point = point.previous
+#for wh in [5,19]:
+#  for n in [50,100]:
+#    for tau in [9]:
+#        for r in [1,3,5,7,9]:
+#            for ins in [1,2,3,4,5,6,7,8,9,10]:
+#                if n==100 and r>5:
+#                    break
 
-#                    i = len(list)-1;
-#                    string1 = "sol:"
-#                    while i>=0:
-#                        string1 += str(list[i].job.id) +","
-#                        i-=1
+#                solver = Solver(dataset(n, tau, r, ins), heuristic=True, w=wh, heuristic_function=heuristic_function,limit=3600)
+#                f = open("oas_balas.txt", 'a+')
+#                t = -time.time()
+#                path = solver.solve_exact()
+#                t += time.time()
 
-#                    try:
-#                        print("{0},{1},{2},{3}\t{4}\t{5}\t{6}\t{7}".format(n, tau, r, ins, path.value, t,string1,phi), file=f)
-#                        print("{0},{1},{2},{3}\t{4}\t{5}\t{6}".format(n, tau, r, ins, path.value, t,phi))
-#                    except:
-#                        print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins)) 
+#                list = []
+#                list.append(path);
+#                point = path.previous
+#                while point!=None:
+#                    list.append(point)
+#                    point = point.previous
 
-#                    f.close();
-#                    del(solver)
-#                    del(path)
-#                    del(list);
-#                    gc.collect()
+#                i = len(list)-1;
+#                string1 = "sol:"
+#                while i>=0:
+#                    string1 += str(list[i].job.id) +","
+#                    i-=1
 
-#for phi in [0.05,0.1]:
-#    for v in reversed([v/100 for v in range(0, 102, 2)]):
+#                try:
+#                    print("{0},{1},{2},{3}\t{4}\t{5}\t{6}".format(n, tau, r, ins, path.value, t,string1), file=f)
+#                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t))
+#                except:
+#                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins)) 
+
+#                f.close();
+#                del(solver)
+#                del(path)
+#                del(list);
+#                gc.collect()
+
+#heuristic_function = latest_start_time     
+#for wh in [5,19]:
+#   for v in reversed([v/100 for v in range(0, 102, 2)]):
 #        for ins in range(0, 5):
 #             filename = "Dataset_OAS/Dataset_bounded_width/CovarianceChange_30orders_c{0}_{1}.txt".format(v, ins)
 
-#             solver = Solver(filename,limit=1800)
+#             solver = Solver(filename, heuristic=True, w=wh, heuristic_function=heuristic_function,limit=1800)
 
-#             f = open("cov_FPTAS.txt", 'a+')
+#             f = open("cov_balas.txt", 'a+')
 
 #             t = -time.time()
-#             path = solver.solve_fptas(phi)
+#             path = solver.solve_exact()
 #             t += time.time()
 
 #             try:
@@ -583,8 +588,8 @@ def get_time_windows(jobs): #functional
 
 #             #all_t.append(t)
              
-#                 print("{0}\tCovarianceChange_{1}_{2}\t{3}\t{4}\t{5}".format(phi,(1-v),ins,path.value, t,string1), file=f)
-#                 print("{0}\tCovarianceChange_{1}_{2}\t{3}\t{4}".format(phi,(1-v),ins,path.value,t))
+#                 print("{0}\tCovarianceChange_{1}_{2}\t{3}\t{4}\t{5}".format(wh,(1-v),ins,path.value, t,string1), file=f)
+#                 print("{0}\tCovarianceChange_{1}_{2}\t{3}\t{4}".format(wh,(1-v),ins,path.value,t))
 #             except:
 #                 print("CovarianceChange_{0}_{1}\tNo results.".format((1-v),ins))
 
@@ -593,28 +598,30 @@ def get_time_windows(jobs): #functional
 #             del(list);
 #             gc.collect()
 
+heuristic_function = latest_start_time
 n = 100
 
-for phi in [0.05,0.1]:
+for wh in [5,19]:
   for R in [1]:
     for w in [3,5,7,9,11,13,15,17,19]:
          for ins in range(0, 5):
-             f = open("width_FPTAS.txt", 'a+')
+             f = open("width_balas.txt", 'a+')
              filename = "Instances_DiffWidth/Dataset_{0}orders_w{1}R{2}_{3}.txt".format(n, w, R, ins)
 
-             solver = Solver(filename,limit=1800)
+             solver = Solver(filename, heuristic=True, w=wh, heuristic_function=heuristic_function,limit=1800)
+
+             
 
              t = -time.time()
-             path = solver.solve_fptas(phi)
+             path = solver.solve_exact()
              t += time.time()
 
              try:
-                 print("{0}\t{1},{2},{3}\t{4}\t{5}\t{6}".format(phi,n, w, R, ins, path.value, t))
-                 print("{0}\t{1},{2},{3}\t{4}\t{5}\t{6}".format(phi,n, w, R, ins, path.value, t), file=f)
+                 print("{0}\t{1},{2},{3}\t{4}\t{5}\t{6}".format(wh,n, w, R, ins, path.value, t))
+                 print("{0}\t{1},{2},{3}\t{4}\t{5}\t{6}".format(wh,n, w, R, ins, path.value, t), file=f)
              except:
                  print("{0},{1},{2},{3}\tNo result.".format(n, w, R, ins))  
 
              del(solver)
              del(path)
              gc.collect()
-
