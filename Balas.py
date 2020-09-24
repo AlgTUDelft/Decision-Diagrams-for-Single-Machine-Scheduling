@@ -1,12 +1,12 @@
 import itertools
 import math
 import time
-#import numpy
 import gc
 import heapq
 
 class Solver:
     def __init__(self, dataset_file, w=100, heuristic=False, heuristic_function=None, limit=3600):
+
         # Load problem
         self.jobs, self.source, self.sink = extract_jobs(dataset_file,heuristic_function)
         
@@ -62,11 +62,9 @@ class Solver:
                         del(self.job_states[key])
                 if len(rem_jobs) > 0:
                     gc.collect()
-            
-#            print("window: " + str(window.start_time) + "-" + str(window.next_start_time))
 
             while not self.is_empty():
-                if time.time()-t>self.limit:# or psutil.virtual_memory().percent > 90:
+                if time.time()-t>self.limit:
                     timeout = True
                     break
             
@@ -80,7 +78,7 @@ class Solver:
 
                 if not self.is_dominated(job, job_state, path_point_time, path_point, window):
                     for successor in job.successors[window.start_time]:
-                        if time.time()-t>self.limit:# or psutil.virtual_memory().percent > 90:
+                        if time.time()-t>self.limit:
                              timeout = True
                              break                
                         if successor.id not in job_state.job_ids:
@@ -88,9 +86,9 @@ class Solver:
                              if get:
                                  self.add_point(new_point)
 
-                     #far off
+                    #far off
                     for successor in job.far_offs[window.start_time]:
-                        if time.time()-t>self.limit:# or psutil.virtual_memory().percent > 90:
+                        if time.time()-t>self.limit:
                              timeout = True
                              break
                         if successor.id not in job_state.job_ids:
@@ -110,18 +108,12 @@ class Solver:
             if timeout:
                 break
             
-            #if self.verbose:
-            #    if self.y >= self.n:
-            #        print("y", end="")
-            #    else:
-            #        print(min(9,int(self.n / (self.y + 1))), end="")
-
         return self.sink.get_best_path()
     
     def add_point(self,point):
         if point in self.entry_finder:
             raise Error('point already exists')
-            #self.remove_point(point)
+
         count = next(self.counter)
         entry = [point.point_start_time, count, point]
         self.entry_finder[point] = entry
@@ -169,7 +161,7 @@ class Solver:
                 subset_key = JobState(subset).as_key()
                 if subset_key in job.path_points:
                     for other_point_time, other_point in job.path_points[subset_key].items():
-                        if other_point.value >= value and other_point_time <= start_time:# and subset_key!= job_state.key:
+                        if other_point.value >= value and other_point_time <= start_time:
                             return True
         
         if point.previous is not None:
@@ -196,7 +188,7 @@ class Solver:
 
         must_visits = sorted(list(point.must_visits()), key=lambda j: j.deadline)
 
-        t = start_time #+ job.processing_time
+        t = start_time
         for i in range(len(must_visits)):
             if t > must_visits[i].latest_start_time:
                 self.y += 1
@@ -210,8 +202,6 @@ class Solver:
     """
     Given a job, a successor job, a starting path point and a job state, sees if a new path
     point in the successor job is feasible, not dominated and if so inserts it.
-    TODO: optimise, most used method
-    MUTATING: self.jobs (successor), self.last_window
     """
     def try_path(self, job, successor, path_point_time, path_point, job_state, original_window): 
 
@@ -245,7 +235,6 @@ class Solver:
  
         new_job_state = JobState(job_ids)
         new_key = new_job_state.as_key()
-        #new_job_state.job_com_ids = partial_job_com_ids
 
         #Calculate current max index
         index = max(path_point.index,successor.index)
@@ -278,15 +267,12 @@ class Solver:
             self.remove_point(point)
             del(successor.path_points[new_key][point_time])
             del(point)
-        #for point_time, point in successor.path_points[new_key].items():
 
-            
         successor.path_points[new_key][completion_time] = PathPoint(value, successor, path_point, set(),partial_job_com_ids,completion_time,new_job_state,index)
         return successor.path_points[new_key][completion_time],True
         
     """
     Finds the time window corresponding to a given time.
-    TODO: optimise, most used method
     MUTATING: self.last_window
     """
     def get_partial_job_state(self, time, job, job_state, original_window, path_point):
@@ -301,7 +287,6 @@ class Solver:
     
     """
     Finds potential successors for a job completed in a time window which
-    TODO: optimise, most used method
     """
     def get_suitable_successors(self, job, window, job_state): #functional
         return [job for job in job.successors[window.start_time] if job.id not in job_state.job_ids]
@@ -519,7 +504,7 @@ def get_time_windows(jobs): #functional
 
 #heuristic_function = latest_start_time
 
-#for wh in [5,19]:
+#for wh in [5,12]:
 #  for n in [50,100]:
 #    for tau in [9]:
 #        for r in [1,3,5,7,9]:
@@ -559,7 +544,7 @@ def get_time_windows(jobs): #functional
 #                gc.collect()
 
 #heuristic_function = latest_start_time     
-#for wh in [5,19]:
+#for wh in [5,12]:
 #   for v in reversed([v/100 for v in range(0, 102, 2)]):
 #        for ins in range(0, 5):
 #             filename = "Dataset_OAS/Dataset_bounded_width/CovarianceChange_30orders_c{0}_{1}.txt".format(v, ins)
@@ -601,7 +586,7 @@ def get_time_windows(jobs): #functional
 heuristic_function = latest_start_time
 n = 100
 
-for wh in [5,19]:
+for wh in [5,12]:
   for R in [1]:
     for w in [3,5,7,9,11,13,15,17,19]:
          for ins in range(0, 5):

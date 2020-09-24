@@ -1,10 +1,7 @@
 import itertools
 import math
 import time
-#import numpy
 import gc
-#import psutil
-#from func_timeout import func_set_timeout
 
 class Solver:
     def __init__(self, dataset_file):
@@ -58,17 +55,17 @@ class Solver:
                             max_path_time, max_path = [(point_time, point) for point_time, point in path_points if point.value == max_value][0]
                         for path_point_time, path_point in path_points:
                             
-                            if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
+                            if time.time()-t>3600:
                                 timeout = True
                                 break
                             for successor in job.successors[window.start_time]:
-                                if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
+                                if time.time()-t>3600:
                                     timeout = True
                                     break
                                 if successor.id not in job_state.job_ids:
                                     self.try_path(job, successor, path_point_time, path_point, job_state, window)
                             for successor in job.far_offs[window.start_time]:
-                                if time.time()-t>3600:# or psutil.virtual_memory().percent > 90:
+                                if time.time()-t>3600:
                                     timeout = True
                                     break
                                 if successor.id not in job_state.job_ids:
@@ -89,8 +86,7 @@ class Solver:
                     print("y", end="")
                 else:
                     print(min(9,int(self.n / (self.y + 1))), end="")
-        #if psutil.virtual_memory().percent > 90:
-        #    memoryout=True
+
         return self.sink.get_best_path()
     
     def is_dominated(self, job, job_state, point_time, point, window):
@@ -101,7 +97,7 @@ class Solver:
                 subset_key = JobState(subset,len(subset)).as_key()
                 if subset_key in job.path_points:
                     for other_point_time, other_point in job.path_points[subset_key].items():
-                        if other_point.value >= value and other_point_time <= start_time:# and subset_key!= job_state.key:
+                        if other_point.value >= value and other_point_time <= start_time:
                             return True
         
         if point.previous is not None:
@@ -128,7 +124,7 @@ class Solver:
 
         must_visits = sorted(list(point.must_visits()), key=lambda j: j.deadline)
 
-        t = start_time #+ job.processing_time
+        t = start_time
         for i in range(len(must_visits)):
             if t > must_visits[i].latest_start_time:
                 self.y += 1
@@ -142,7 +138,6 @@ class Solver:
     """
     Given a job, a successor job, a starting path point and a job state, sees if a new path
     point in the successor job is feasible, not dominated and if so inserts it.
-    TODO: optimise, most used method
     MUTATING: self.jobs (successor), self.last_window
     """
     def try_path(self, job, successor, path_point_time, path_point, job_state, original_window): 
@@ -183,8 +178,6 @@ class Solver:
         # Create new state if completely new
         if new_key not in self.job_states:
             self.job_states[new_key] = new_job_state
-        #else:
-        #    self.job_states[new_key].job_com_ids= list(set(new_job_state.job_com_ids).union(set(self.job_states[new_key].job_com_ids)))
         
         new_job_state = self.job_states[new_key]
 
@@ -196,8 +189,6 @@ class Solver:
 
         # check for dominating path_point for the same state (irrespective of windows!)
         for point_time, point in successor.path_points[new_key].items():
-            #if point_time == completion_time:
-            #    self.job_states[new_key].job_com_ids= partial_job_com_ids|self.job_states[new_key].job_com_ids
             if point_time == completion_time and point.value >= value:
                 return
             
@@ -206,29 +197,11 @@ class Solver:
         
     """
     Finds the time window corresponding to a given time.
-    TODO: optimise, most used method
     MUTATING: self.last_window
     """
     def get_partial_job_state(self, time, job, job_state, original_window, path_point):
-        # track last window because it is not all that unlikely that this remains the same for many path points
-        #if time < self.last_window.start_time or time >= self.last_window.next_start_time or job_state.job_ids != self.last_prev_job_state:
-        #    if time >= self.last_window.next_start_time:
-        #        for i in range(self.last_window.id + 1, len(self.time_windows)):
-        #            if time < self.time_windows[i].next_start_time:
-        #                self.last_window = self.time_windows[i]
-        #                break
-        #    else:
-        #        for i in range(original_window.id, self.last_window.id):
-        #            if time < self.time_windows[i].next_start_time:
-        #                self.last_window = self.time_windows[i]
-        #                break
-        #    self.last_prev_job_state = job_state.job_ids
-        #    self.last_partial_job_ids = [i for i in job_state.job_ids if i in self.last_window.job_ids]
         last_partial_job_com_ids=set()
-        self.last_partial_job_ids=[]
-        #self.jobs
-        #for Job in original_window.jobs:
-        #    if Job.id in job_state.job_ids and Job.latest_start_time>=time: path_point.VisitedStates: 
+        self.last_partial_job_ids=[] 
         for id in path_point.VisitedStates: 
             if self.jobs[id].latest_start_time>=time:
                 last_partial_job_com_ids.add(id)
@@ -238,7 +211,6 @@ class Solver:
     
     """
     Finds potential successors for a job completed in a time window which
-    TODO: optimise, most used method
     """
     def get_suitable_successors(self, job, window, job_state): #functional
         return [job for job in job.successors[window.start_time] if job.id not in job_state.job_ids]
@@ -300,10 +272,6 @@ class Job:
         return str(self.id)
     
     def get_job_states(self, size, job_states): #functional
-        #for key in self.path_points:
-        #    if key in job_states:
-        #        if job_states[key].size==size:
-        #            aaaa=1
         return [job_states[key] for key in self.path_points if key in job_states and job_states[key].size == size]
     
     def setup_time(self, successor): #functional
@@ -341,7 +309,6 @@ class JobState:
         self.key = ",".join([str(job_id) for job_id in self.job_ids])
         self.key+=","+str(size)
         self.size = size
-        #self.job_com_ids=set(); ,'job_com_ids'
     
     def __len__(self):
         return self.size
@@ -454,12 +421,11 @@ for n in [50,100]:
                 path = solver.solve_exact()
                 t += time.time()
 
- #             print()
                 try:
                     print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t), file=f)
                 except:
                     print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f) 
- #             print(path.get_path())
+
                 f.close();
                 del(solver)
                 del(path)
