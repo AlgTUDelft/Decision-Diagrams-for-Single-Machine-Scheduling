@@ -1,3 +1,7 @@
+#Source code of the neighbourhood heuristic method similar to the Balas-Simonetti neighbourhood. 
+#Authors: Mathijs de Weerdt (M.M.deWeerdt@tudelft.nl), Robert Baart, Lei He
+#Date: Sept 24, 2020
+
 import itertools
 import math
 import time
