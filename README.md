@@ -8,6 +8,12 @@ The repository contains the order acceptance and scheduling (OAS) datasets provi
 
 If you use these code or data, please cite the following paper: Mathijs de Weerdt, Robert Baart, Lei He (2021), [Single-machine scheduling with release times, deadlines, setup times, and rejection](https://doi.org/10.1016/j.ejor.2020.09.042), In European Journal of Operational Research Volume 291 p.629-639.
 
+All results from the paper are generated with the Solver().
+`EM.py` also includes a more direct Dynamic Programming implementation. 
+The variant without making the triangle inequality assumption on sequence-dependent setup times is the correct one for all instances.
+Unfortunately, the paper includes the triangle inequality in Equation 2.
+The line with X<sub>k</sub> should be without the "+ s<sub>kj</sub>" to remove the triangle inequality assumption.
+
 # References
 Oğuz, C., Salman, F. S., & Yalçın, Z. B. (2010). Order acceptance and scheduling decisions
 in make-to-order systems. International Journal of Production Economics, 125(1),
