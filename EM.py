@@ -1,15 +1,23 @@
 #Source code of the exact method. 
 #Authors: Mathijs de Weerdt (M.M.deWeerdt@tudelft.nl), Robert Baart, Lei He
 #Date: Sept 24, 2020
+#Update: January 2022:
+# - added separate functions for running experiments
+# - possibility to turn triangle inequality assumption for sequence-dependent setup times on/off
+# - added straightforward DP implementation (slower, but easier to read, with thanks to Andor Michels)
 
 import itertools
 import math
 import time
 import gc
 import heapq
+import queue
 
 class Solver:
-    def __init__(self, dataset_file):
+    def __init__(self, dataset_file, triangle = False):
+        # set option to use triangle inequality
+        self.triangle = triangle
+
         # Load problem
         self.jobs, self.source, self.sink = extract_jobs(dataset_file)
         
@@ -476,92 +484,191 @@ def get_time_windows(jobs): #functional
     return time_windows
 
 
-#for v in reversed([v/100 for v in range(0, 102, 2)]):
-#        for ins in range(0, 5):
-#             filename = "Dataset_OAS/Dataset_bounded_width/CovarianceChange_30orders_c{0}_{1}.txt".format(v, ins)
+# more direct implementation, by Andor Michels
+def solveDP(r, p, d, d_bar, v, w, s, triangle):
 
-#             solver = Solver(filename)
+  priorityQueue = queue.PriorityQueue()
+  priorityQueue.put([0, {0, len(r)-1}, 0])
 
-#             f = open("cov_EM.txt", 'a+')
+  valuesMap = {}
+  valuesMap[(0, frozenset({0, len(r)-1}), 0)] = 0
 
-#             t = -time.time()
-#             path = solver.solve_exact()
-#             t += time.time()
+  max_value = 0
 
-#             try:
+  while not priorityQueue.empty():
+    t_i, X, i = priorityQueue.get()
+    if not (t_i, frozenset(X), i) in valuesMap:
+      continue
+    interm_v = valuesMap[(t_i, frozenset(X), i)]
+    del valuesMap[(t_i, frozenset(X), i)]
+    C_i = t_i + p[i]
+    F = [j for j in range(len(p)) if not j in X and C_i + s[i][j] <= d_bar[j] - p[j]]
+    if len(F) == 0:
+      max_value = max(interm_v, max_value)
+      continue
+    for k in F:
+      t_k = max(C_i, r[k]) + s[i][k]
+      X_prime = X.copy()
+      X_prime.add(k)
+      C_k = t_k + p[k]
+      # which from the already scheduled (and therefore to be excluded) jobs do we need to know about after C_k ?
+      # only those whose latest starttime is after C_k
+      if( triangle ):
+        # if the triangle inequality holds, we can get rid of more (but if it doesn't, such as in 50,9,1,4 a job may be scheduled twice)
+        X_k = {j for j in X_prime if d_bar[j] - p[j] >= C_k + s[k][j]}
+      else:
+        X_k = {j for j in X_prime if d_bar[j] - p[j] >= C_k}
+      T_k = max(C_k - d[k], 0)
+      interm_value = v[k] - w[k] * T_k + interm_v
+      priorityQueue.put([t_k, X_k, k])
+      if (t_k, frozenset(X_k), k) in valuesMap:
+        valuesMap[(t_k, frozenset(X_k), k)] = max(interm_value, valuesMap[(t_k, frozenset(X_k), k)])
+      else:
+        valuesMap[(t_k, frozenset(X_k), k)] = interm_value
+
+  return max_value
+
+def runDPFromFile(filename, triangle = False):
+  with open(filename) as f_in:
+    input = [[float(i) for i in l.split(',')] for l in f_in.readlines()]
+    r = input[0][:]
+    p = input[1][:]
+    d = input[2][:]
+    d_bar = input[3][:]
+    v = input[4][:]
+    w = input[5][:]
+    s = input[6:][:]
+
+    return solveDP(r, p, d, d_bar, v, w, s, triangle)
 
 
-#                 string1=" " 
-#                 print("CovarianceChange_{0}_{1}\t{2}\t{3}\t{4}".format((1-v),ins,path.value, t,string1), file=f)
-#                 print("CovarianceChange_{0}_{1}\t{2}\t{3}".format((1-v),ins,path.value,t))
-#             except:
-#                 print("CovarianceChange_{0}_{1}\tNo results.".format((1-v),ins))
+def runCovariance():
+    for v in reversed([v/100 for v in range(0, 102, 2)]):
+            for ins in range(0, 5):
+                 filename = "Dataset_OAS/Dataset_bounded_width/CovarianceChange_30orders_c{0}_{1}.txt".format(v, ins)
 
-#             del(solver)
-#             del(path)
-#             gc.collect()
+                 solver = Solver(filename)
+
+                 f = open("cov_EM.txt", 'a+')
+
+                 t = -time.time()
+                 path = solver.solve_exact()
+                 t += time.time()
+
+                 try:
 
 
-n = 100
+                     string1=" "
+                     print("CovarianceChange_{0}_{1}\t{2}\t{3}\t{4}".format((1-v),ins,path.value, t,string1), file=f)
+                     print("CovarianceChange_{0}_{1}\t{2}\t{3}".format((1-v),ins,path.value,t))
+                 except:
+                     print("CovarianceChange_{0}_{1}\tNo results.".format((1-v),ins))
+
+                 del(solver)
+                 del(path)
+                 gc.collect()
 
 
-for R in [1]:
-    for w in [3,5,7,9,11,13,15,17,19]:
-         for ins in range(0, 5):
-             f = open("width_EM.txt", 'a+')
-             filename = "Instances_DiffWidth/Dataset_{0}orders_w{1}R{2}_{3}.txt".format(n, w, R, ins)
+def runChangingWidth(n):
+    for R in [1]:
+        for w in [3,5,7,9,11,13,15,17,19]:
+             for ins in range(0, 5):
+                 f = open("width_EM.txt", 'a+')
+                 filename = "Instances_DiffWidth/Dataset_{0}orders_w{1}R{2}_{3}.txt".format(n, w, R, ins)
 
-             solver = Solver(filename)
+                 solver = Solver(filename)
 
-             
 
-             t = -time.time()
-             path = solver.solve_exact()
-             t += time.time()
 
-             try:
-                 print("{0},{1},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t))
-                 print("{0},{2},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t), file=f)
-             except:
-                 print("{0},{1},{2},{3}\tNo result.".format(n, w, R, ins), file=f)  
+                 t = -time.time()
+                 path = solver.solve_exact()
+                 t += time.time()
 
-             del(solver)
-             del(path)
-             gc.collect()
+                 try:
+                     print("{0},{1},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t))
+                     print("{0},{2},{2}\t{3}\t{4}\t{5}".format(n, w, R, ins, path.value, t), file=f)
+                 except:
+                     print("{0},{1},{2},{3}\tNo result.".format(n, w, R, ins), file=f)
 
-#for n in [50,100]:
-#    for tau in [9]:
-#        for r in [1,3,5,7,9]:
-#            for ins in [1,2,3,4,5,6,7,8,9,10]:
-#                if n==100 and r>5:
-#                    break
-#                solver = Solver(dataset(n, tau, r, ins))
-#                f = open("oas_EM.txt", 'a+')
-#                t = -time.time()
-#                path = solver.solve_exact()
-#                t += time.time()
+                 del(solver)
+                 del(path)
+                 gc.collect()
+
+def runOrginalDataset(n):
+    for tau in [9]:
+        for r in [1,3,5,7,9]:
+            for ins in [1,2,3,4,5,6,7,8,9,10]:
+                if n==100 and r>5:
+                    break
+                solver = Solver(dataset(n, tau, r, ins))
+                f = open("oas_EM.txt", 'a+')
+                t = -time.time()
+                path = solver.solve_exact()
+                t += time.time()
+
+                list = []
+                list.append(path);
+                point = path.previous
+                while point!=None:
+                    list.append(point)
+                    point = point.previous
+
+                i = len(list)-1;
+                string1 = "sol:"
+                while i>=0:
+                    string1 += str(list[i].job.id) +","
+                    i-=1
+
+                try:
+                    print("{0},{1},{2},{3}\t{4}\t{5}\t{6}".format(n, tau, r, ins, path.value, t,string1), file=f)
+                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t))
+                except:
+                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f)
+
+                f.close();
+                del(solver)
+                del(path)
+                del(list);
+                gc.collect()
+
+def runOrginalDatasetDP(n):
+    for tau in [9]:
+        for r in [1,3,5]:
+            for ins in [1,2,3,4,5,6,7,8,9,10]:
+                if n==100 and r>5:
+                    break
+                f = open("oas_EM.txt", 'a+')
+                t = -time.time()
+                path = runDPFromFile(dataset(n, tau, r, ins))
+                t += time.time()
 
 #                list = []
 #                list.append(path);
+
 #                point = path.previous
 #                while point!=None:
 #                    list.append(point)
 #                    point = point.previous
-
+#
 #                i = len(list)-1;
 #                string1 = "sol:"
 #                while i>=0:
 #                    string1 += str(list[i].job.id) +","
 #                    i-=1
-
-#                try:
+#
+                try:
 #                    print("{0},{1},{2},{3}\t{4}\t{5}\t{6}".format(n, tau, r, ins, path.value, t,string1), file=f)
 #                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path.value, t))
-#                except:
-#                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f) 
+                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path, t), file=f)
+                    print("{0},{1},{2},{3}\t{4}\t{5}".format(n, tau, r, ins, path, t))
+                except:
+                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins), file=f)
+                    print("{0},{1},{2},{3}\tNo result.".format(n,tau,r,ins))
 
-#                f.close();
+                f.close();
 #                del(solver)
 #                del(path)
 #                del(list);
-#                gc.collect()
+                gc.collect()
+
+runOrginalDatasetDP(50)
